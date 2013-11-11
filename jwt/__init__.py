@@ -3,12 +3,9 @@
 Minimum implementation based on this spec:
 http://self-issued.info/docs/draft-jones-json-web-token-01.html
 """
-from __future__ import unicode_literals
 import base64
-import binascii
 import hashlib
 import hmac
-import sys
 
 from datetime import datetime
 from calendar import timegm
@@ -20,10 +17,6 @@ except ImportError:
     import simplejson as json
 
 __all__ = ['encode', 'decode', 'DecodeError']
-
-
-if sys.version_info >= (3, 0, 0):
-    unicode = str
 
 
 class DecodeError(Exception):
@@ -50,31 +43,28 @@ def constant_time_compare(val1, val2):
     if len(val1) != len(val2):
         return False
     result = 0
-    if sys.version_info >= (3, 0, 0):  # bytes are numbers
-        for x, y in zip(val1, val2):
-            result |= x ^ y
-    else:
-        for x, y in zip(val1, val2):
-            result |= ord(x) ^ ord(y)
+    for x, y in zip(val1, val2):
+        result |= ord(x) ^ ord(y)
     return result == 0
 
 
 def base64url_decode(input):
     rem = len(input) % 4
     if rem > 0:
-        input += b'=' * (4 - rem)
+        input += '=' * (4 - rem)
     return base64.urlsafe_b64decode(input)
 
 
 def base64url_encode(input):
-    return base64.urlsafe_b64encode(input).replace(b'=', b'')
+    if not isinstance(input, bytes):
+        input = input.encode('ascii')
+    return base64.urlsafe_b64encode(input).decode('ascii').replace('=', '')
 
 
 def header(jwt):
-    header_segment = jwt.split(b'.', 1)[0]
+    header_segment = jwt.split('.', 1)[0]
     try:
-        header_data = base64url_decode(header_segment).decode('utf-8')
-        return json.loads(header_data)
+        return json.loads(base64url_decode(header_segment))
     except (ValueError, TypeError):
         raise DecodeError("Invalid header encoding")
 
@@ -89,57 +79,50 @@ def encode(payload, key, algorithm='HS256'):
 
     # Header
     header = {"typ": "JWT", "alg": algorithm}
-    json_header = json.dumps(header).encode('utf-8')
-    segments.append(base64url_encode(json_header))
+    segments.append(base64url_encode(json.dumps(header)))
 
     # Payload
     if isinstance(payload.get('exp'), datetime):
         payload['exp'] = timegm(payload['exp'].utctimetuple())
-    json_payload = json.dumps(payload).encode('utf-8')
-    segments.append(base64url_encode(json_payload))
+    payload = {k : v.decode('utf-8') for k,v in payload.items()}
+    segments.append(base64url_encode(json.dumps(payload)))
 
     # Segments
-    signing_input = b'.'.join(segments)
+    signing_input = '.'.join(segments).encode('utf-8')
     try:
-        if isinstance(key, unicode):
+        if not isinstance(key, bytes):
             key = key.encode('utf-8')
         signature = signing_methods[algorithm](signing_input, key)
     except KeyError:
         raise NotImplementedError("Algorithm not supported")
     segments.append(base64url_encode(signature))
-    return b'.'.join(segments)
+    return '.'.join(segments)
 
 
 def decode(jwt, key='', verify=True, verify_expiration=True, leeway=0):
-    if isinstance(jwt, unicode):
-        jwt = jwt.encode('utf-8')
     try:
-        signing_input, crypto_segment = jwt.rsplit(b'.', 1)
-        header_segment, payload_segment = signing_input.split(b'.', 1)
+        signing_input, crypto_segment = str(jwt).rsplit('.', 1)
+        header_segment, payload_segment = signing_input.split('.', 1)
     except ValueError:
         raise DecodeError("Not enough segments")
 
     try:
-        header_data = base64url_decode(header_segment)
-    except (TypeError, binascii.Error):
+        header = json.loads(base64url_decode(header_segment))
+    except TypeError:
         raise DecodeError("Invalid header padding")
-    try:
-        header = json.loads(header_data.decode('utf-8'))
     except ValueError as e:
         raise DecodeError("Invalid header string: %s" % e)
 
     try:
-        payload_data = base64url_decode(payload_segment)
-    except (TypeError, binascii.Error):
+        payload = json.loads(base64url_decode(payload_segment))
+    except TypeError:
         raise DecodeError("Invalid payload padding")
-    try:
-        payload = json.loads(payload_data.decode('utf-8'))
     except ValueError as e:
         raise DecodeError("Invalid payload string: %s" % e)
 
     try:
         signature = base64url_decode(crypto_segment)
-    except (TypeError, binascii.Error):
+    except TypeError:
         raise DecodeError("Invalid crypto padding")
 
     if verify:
